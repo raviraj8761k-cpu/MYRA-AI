@@ -1,0 +1,9 @@
+.env
+.env.*
+*.key
+venv/
+.venv/
+__pycache__/
+*.pyc
+myra_backup.py
+myra_openai_backup.py
