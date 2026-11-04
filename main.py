@@ -1,110 +1,106 @@
 import os
 import threading
 import requests
-
 from kivy.app import App
-from kivy.lang import Builder
-from kivy.clock import Clock
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.textinput import TextInput
+from kivy.uix.button import Button
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.label import Label
+from kivy.clock import Clock
 
-KV = '''
-BoxLayout:
-    orientation: 'vertical'
-    padding: 12
-    spacing: 10
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_API_KEY_HERE")
+MODEL_NAME = "gemini-2.5-flash"
 
-    Label:
-        text: '[b]MYRA AI[/b]'
-        markup: True
-        font_size: '28sp'
-        size_hint_y: None
-        height: '50dp'
+class MyraUI(BoxLayout):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.orientation = 'vertical'
+        self.padding = 10
+        self.spacing = 10
 
-    TextInput:
-        id: api_key
-        hint_text: 'Gemini API key yahan enter karein'
-        password: True
-        multiline: False
-        size_hint_y: None
-        height: '48dp'
+        # Conversation history for memory
+        self.history = []
 
-    ScrollView:
-        Label:
-            id: chat
-            text: 'MYRA: Namaste Boss! Main taiyaar hoon.\\n'
-            text_size: self.width, None
-            size_hint_y: None
-            height: self.texture_size[1]
-            valign: 'top'
+        # Scrollable chat display
+        self.scroll = ScrollView(size_hint=(1, 0.85))
+        self.chat_layout = BoxLayout(orientation='vertical', size_hint_y=None)
+        self.chat_layout.bind(minimum_height=self.chat_layout.setter('height'))
+        self.scroll.add_widget(self.chat_layout)
+        self.add_widget(self.scroll)
 
-    TextInput:
-        id: message
-        hint_text: 'Boss, kuch bhi poochhiye...'
-        multiline: False
-        size_hint_y: None
-        height: '48dp'
-        on_text_validate: app.send_message()
+        # Input and send layout
+        input_layout = BoxLayout(size_hint=(1, 0.15), spacing=10)
+        self.text_input = TextInput(
+            hint_text="Ask Myra or give coding task, Boss...",
+            size_hint=(0.8, 1),
+            multiline=False
+        )
+        self.text_input.bind(on_text_validate=self.send_message)
+        
+        send_btn = Button(text="Send", size_hint=(0.2, 1))
+        send_btn.bind(on_press=self.send_message)
 
-    Button:
-        text: 'SEND'
-        size_hint_y: None
-        height: '48dp'
-        on_release: app.send_message()
-'''
+        input_layout.add_widget(self.text_input)
+        input_layout.add_widget(send_btn)
+        self.add_widget(input_layout)
 
-class MyraApp(App):
-    def build(self):
-        self.chat_session = []
-        return Builder.load_string(KV)
+        # Initial Greeting
+        self.add_chat("MYRA: Hello Boss! Main Gemini ke saath taiyar hoon. Mujhe sab yaad rahega.")
 
     def add_chat(self, text):
-        self.root.ids.chat.text += text + '\\n'
-        self.root.ids.chat.texture_update()
+        lbl = Label(
+            text=text,
+            size_hint_y=None,
+            height=60,
+            text_size=(self.width - 20, None),
+            halign='left',
+            valign='middle'
+        )
+        lbl.bind(size=lambda s, w: setattr(s, 'text_size', (w[0], None)))
+        self.chat_layout.add_widget(lbl)
 
-    def send_message(self):
-        message = self.root.ids.message.text.strip()
-        key = self.root.ids.api_key.text.strip()
-
-        if not key:
-            self.add_chat('MYRA: Boss, pehle Gemini API key enter karein.')
+    def send_message(self, instance):
+        user_text = self.text_input.text.strip()
+        if not user_text:
             return
 
-        if not message:
-            return
+        self.add_chat(f"Boss: {user_text}")
+        self.text_input.text = ""
 
-        self.root.ids.message.text = ''
-        self.add_chat('Boss: ' + message)
-        self.add_chat('MYRA: Soch rahi hoon...')
+        # Append user message to history
+        self.history.append({"role": "user", "parts": [{"text": user_text}]})
 
-        threading.Thread(
-            target=self.ask_gemini,
-            args=(message, key),
-            daemon=True
-        ).start()
+        # Run API call in background thread to avoid freezing UI
+        threading.Thread(target=self.fetch_gemini_response, daemon=True).start()
 
-    def ask_gemini(self, message, key):
+    def fetch_gemini_response(self):
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": "Your name is MYRA. You are a helpful, intelligent female AI assistant. Always call the user Boss. Reply naturally in Hindi, English or Hinglish. Remember everything discussed in the chat session."}]
+            },
+            "contents": self.history
+        }
+
         try:
-            url = (
-                'https://generativelanguage.googleapis.com/v1beta/'
-                'models/gemini-2.5-flash:generateContent'
-            )
-            response = requests.post(
-                url,
-                params={'key': key},
-                json={
-                    'systemInstruction': {
-                        'parts': [{'text': 'You are MYRA, a helpful AI assistant. Address the user as Boss. Reply naturally in the language the user uses.'}]
-                    },
-                    'contents': [{'parts': [{'text': message}]}]
-                },
-                timeout=45
-            )
+            response = requests.post(url, json=payload, headers=headers, timeout=45)
             response.raise_for_status()
             data = response.json()
             answer = data['candidates'][0]['content']['parts'][0]['text']
+            
+            # Append model response to history for persistent memory
+            self.history.append({"role": "model", "parts": [{"text": answer}]})
         except Exception as error:
-            answer = 'Boss, connection mein dikkat aayi: ' + str(error)
+            answer = f"Boss, connection mein dikkat aayi: {str(error)}"
 
-        Clock.schedule_once(lambda dt: self.add_chat('MYRA: ' + answer))
+        Clock.schedule_once(lambda dt: self.add_chat(f"MYRA: {answer}"))
 
-MyraApp().run()
+class MyraApp(App):
+    def build(self):
+        return MyraUI()
+
+if __name__ == '__main__':
+    MyraApp().run()
